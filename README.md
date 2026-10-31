@@ -1,8 +1,9 @@
-# Payment SR Alert Bot — Airflow + ClickHouse + Slack
+# Merchant Pulse — Payment Health Monitor (Airflow + ClickHouse + Slack)
 
-> Automated payment health monitoring that posts real-time success-rate digests
-> to Slack, giving account managers merchant-level visibility without touching
-> a data warehouse.
+> Automated payment observability agent that fetches transaction success-rate
+> data from ClickHouse and posts structured Slack digests every 2 hours —
+> giving account teams real-time merchant health visibility without needing
+> direct data warehouse access.
 
 ---
 
