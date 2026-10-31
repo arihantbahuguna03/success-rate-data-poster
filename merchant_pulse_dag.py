@@ -72,17 +72,57 @@ tags_dct = {
 # thread_ts=None → fresh top-level message each run; set a real ts to thread.
 
 MERCHANTS = [
-    # ── Tier-1 merchants (high-volume, dedicated channel) ──────────────────
-    {"merchant_id": "DEMO_MID_001", "name": "Merchant Alpha",   "channel_id": "C_DEMO_CHANNEL_A", "thread_ts": None},
-    {"merchant_id": "DEMO_MID_002", "name": "Merchant Beta",    "channel_id": "C_DEMO_CHANNEL_A", "thread_ts": None},
-    {"merchant_id": "DEMO_MID_003", "name": "Merchant Gamma",   "channel_id": "C_DEMO_CHANNEL_A", "thread_ts": None},
-    # ── Tier-2 merchants (shared monitoring channel) ────────────────────────
-    {"merchant_id": "DEMO_MID_004", "name": "Merchant Delta",   "channel_id": "C_DEMO_CHANNEL_B", "thread_ts": None},
-    {"merchant_id": "DEMO_MID_005", "name": "Merchant Epsilon", "channel_id": "C_DEMO_CHANNEL_B", "thread_ts": None},
-    {"merchant_id": "DEMO_MID_006", "name": "Merchant Zeta",    "channel_id": "C_DEMO_CHANNEL_B", "thread_ts": None},
-    # ── Pilot merchants (separate channel for closer monitoring) ────────────
-    {"merchant_id": "DEMO_MID_007", "name": "Merchant Eta",     "channel_id": "C_DEMO_CHANNEL_C", "thread_ts": None},
-    {"merchant_id": "DEMO_MID_008", "name": "Merchant Theta",   "channel_id": "C_DEMO_CHANNEL_C", "thread_ts": None},
+    # Tier-1 — high-volume merchants, each gets a dedicated Slack channel
+    {
+        "merchant_id": "DEMO_MID_001",
+        "name": "Merchant Alpha",
+        "channel_id": "C_DEMO_CHANNEL_A",
+        "thread_ts": None,
+    },
+    {
+        "merchant_id": "DEMO_MID_002",
+        "name": "Merchant Beta",
+        "channel_id": "C_DEMO_CHANNEL_A",
+        "thread_ts": None,
+    },
+    {
+        "merchant_id": "DEMO_MID_003",
+        "name": "Merchant Gamma",
+        "channel_id": "C_DEMO_CHANNEL_A",
+        "thread_ts": None,
+    },
+    # Tier-2 — mid-volume merchants, share a monitoring channel
+    {
+        "merchant_id": "DEMO_MID_004",
+        "name": "Merchant Delta",
+        "channel_id": "C_DEMO_CHANNEL_B",
+        "thread_ts": None,
+    },
+    {
+        "merchant_id": "DEMO_MID_005",
+        "name": "Merchant Epsilon",
+        "channel_id": "C_DEMO_CHANNEL_B",
+        "thread_ts": None,
+    },
+    {
+        "merchant_id": "DEMO_MID_006",
+        "name": "Merchant Zeta",
+        "channel_id": "C_DEMO_CHANNEL_B",
+        "thread_ts": None,
+    },
+    # Pilot — new merchants under closer monitoring
+    {
+        "merchant_id": "DEMO_MID_007",
+        "name": "Merchant Eta",
+        "channel_id": "C_DEMO_CHANNEL_C",
+        "thread_ts": None,
+    },
+    {
+        "merchant_id": "DEMO_MID_008",
+        "name": "Merchant Theta",
+        "channel_id": "C_DEMO_CHANNEL_C",
+        "thread_ts": None,
+    },
 ]
 
 MERCHANT_IDS = [m["merchant_id"] for m in MERCHANTS]
