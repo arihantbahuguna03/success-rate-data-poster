@@ -22,11 +22,9 @@ Architecture highlights
 
 Payment method segmentation
 ----------------------------
-Each transaction is bucketed into one of nine categories based on card type
-(debit / credit / prepaid), recurrence (one-time vs recurring, initial vs
-auto), and geography (domestic vs international / Amex non-IN).  The SQL
-CASE block encodes this logic directly in ClickHouse to avoid post-fetch
-filtering in Python.
+Each transaction is bucketed into one of nine demo categories based on
+card attributes and transaction type. The SQL CASE block encodes this
+logic directly in ClickHouse to avoid post-fetch filtering in Python.
 
 Airflow v3 notes
 -----------------
@@ -37,7 +35,7 @@ Airflow v3 notes
   SlackWebhookOperator and calls .execute() with a live task context;
   BaseHook.get_connection needs the metadata DB — both worker-only.
 
-Author : arihant.bahuguna@gmail.com
+Author : demo-owner@demo.com
 """
 
 import logging
@@ -54,7 +52,7 @@ from lib import email, slack
 # Constants
 # ---------------------------------------------------------------------------
 
-DAG_OWNER = "arihant.bahuguna@gmail.com"
+DAG_OWNER = "demo-owner@demo.com"
 DAG_ID    = "merchant_pulse"
 
 logger = logging.getLogger(__name__)
@@ -225,11 +223,11 @@ FROM (
         END                                         AS payment_segment,
         count(id)                                   AS attempts,
         round(countIf(authorized_at > 0) * 100.0 / count(id), 2) AS success_rate
-    FROM payments.transactions_view
+    FROM demo_db.transactions_view
     WHERE merchant_id IN ({merchant_ids_sql})
-      -- Exclude known non-3DS block — not a real failure
+      -- Exclude known non-actionable error — not a real failure
       AND (internal_error_code IS NULL
-           OR internal_error_code NOT IN ('BAD_REQUEST_NON_3DS_INTERNATIONAL_NOT_ALLOWED'))
+           OR internal_error_code NOT IN ('DEMO_BLOCKED_ERROR_CODE'))
       -- Rolling 3-hour window (IST-aware)
       AND created_at >= toUnixTimestamp(toStartOfHour(toTimeZone(now(), 'Asia/Kolkata'))) - (3 * 3600)
       AND created_at <  toUnixTimestamp(toStartOfHour(toTimeZone(now(), 'Asia/Kolkata')))
@@ -293,12 +291,12 @@ FROM (
         END                                                       AS payment_segment,
         internal_error_code                                       AS error_code,
         id
-    FROM payments.transactions_view
+    FROM demo_db.transactions_view
     WHERE merchant_id IN ({merchant_ids_sql})
       AND authorized_at = 0
       AND internal_error_code IS NOT NULL
       AND internal_error_code != ''
-      AND internal_error_code NOT IN ('BAD_REQUEST_NON_3DS_INTERNATIONAL_NOT_ALLOWED')
+      AND internal_error_code NOT IN ('DEMO_BLOCKED_ERROR_CODE')
       AND created_at >= toUnixTimestamp(toStartOfHour(toTimeZone(now(), 'Asia/Kolkata'))) - (3 * 3600)
       AND created_at <  toUnixTimestamp(toStartOfHour(toTimeZone(now(), 'Asia/Kolkata')))
 ) AS base

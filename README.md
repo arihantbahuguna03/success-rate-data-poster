@@ -29,12 +29,12 @@ top failure error codes with sample payment IDs for instant investigation.
 Posted at: 2026-01-15 14:15:00 IST
 
 *12:00 - 13:00*
-  • Credit Card - Recurring - Auto - International: 340 attempts | 94.12% SR
+  • Demo Payment Method 4: 340 attempts | 94.12% SR
     ↳ GATEWAY_TIMEOUT (18 failures): pay_ABC1, pay_ABC2, pay_ABC3
-  • Debit Card - International: 120 attempts | 97.50% SR
+  • Demo Payment Method 7: 120 attempts | 97.50% SR
 
 *11:00 - 12:00*
-  • Credit Card - International: 298 attempts | 96.98% SR
+  • Demo Payment Method 8: 298 attempts | 96.98% SR
 ```
 
 ---
@@ -57,7 +57,7 @@ ClickHouse (columnar DB)
 
 | Decision | Rationale |
 |---|---|
-| **2 queries total** instead of `2 × N_merchants` | ClickHouse read-only user has an hourly query quota. With 26 merchants the naïve approach hits `52 queries/run`; this approach uses `2`. |
+| **2 queries total** instead of `2 × N_merchants` | ClickHouse read-only user has an hourly query quota. With many merchants the naïve approach hits `2×N queries/run`; this approach uses `2`. |
 | **`retries=0`** | A retry after quota exhaustion makes things worse, not better. Fail fast; let on-call investigate. |
 | **1-hour overlap buffer** | Window covers the last 3 completed hours. If one run fails, the next run's window still covers the missed hour. |
 | **Explicit `toTimeZone(..., 'Asia/Kolkata')`** | ClickHouse server timezone is unreliable in cloud deployments. IST is baked into every timestamp operation. |
@@ -68,22 +68,21 @@ ClickHouse (columnar DB)
 
 ## Payment method segmentation
 
-Each transaction is classified into one of 9 buckets:
+Each transaction is classified into one of 9 demo buckets based on card
+attributes and transaction type (names are illustrative — replace with
+your own taxonomy):
 
-| Card type | Recurrence | Geography | Bucket |
-|---|---|---|---|
-| Credit | Recurring – Initial | International | `Credit Card - Recurring - Initial - International` |
-| Credit | Recurring – Auto | International | `Credit Card - Recurring - Auto - International` |
-| Credit | One-time | International | `Credit Card - International` |
-| Debit | Recurring – Initial | International | `Debit Card - Recurring - Initial - International` |
-| Debit | Recurring – Auto | International | `Debit Card - Recurring - Auto - International` |
-| Debit | One-time | International | `Debit Card - International` |
-| Prepaid | Recurring – Initial | International | `Prepaid Card - Recurring - Initial - International` |
-| Prepaid | Recurring – Auto | International | `Prepaid Card - Recurring - Auto - International` |
-| Prepaid | One-time | International | `Prepaid Card - International` |
-
-"International" includes Amex cards issued outside India regardless of the
-`international` flag.
+| Bucket | Label |
+|---|---|
+| Demo Payment Method 1 | Card type A — Recurring (initial/change) |
+| Demo Payment Method 2 | Card type A — Recurring (auto) |
+| Demo Payment Method 3 | Card type B — Recurring (initial/change) |
+| Demo Payment Method 4 | Card type B — Recurring (auto) |
+| Demo Payment Method 5 | Card type C — Recurring (initial/change) |
+| Demo Payment Method 6 | Card type C — Recurring (auto) |
+| Demo Payment Method 7 | Card type A — One-time |
+| Demo Payment Method 8 | Card type B — One-time |
+| Demo Payment Method 9 | Card type C — One-time |
 
 ---
 
