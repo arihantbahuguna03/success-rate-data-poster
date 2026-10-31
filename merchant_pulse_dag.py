@@ -8,7 +8,7 @@ visibility into payment health without needing direct data warehouse access.
 Architecture highlights
 -----------------------
 • Data source  : ClickHouse (columnar DB) via a read-only Airflow connection
-• Schedule     : Every 2 hours at :15  (cron: 15 */2 * * *)
+• Schedule     : Every hour at :15  (cron: 15 * * * *)
 • Window       : Last 3 completed hours — 1h overlap acts as a recovery
                  buffer if a single run fails
 • Timezone     : Explicit IST via toTimeZone() — independent of server TZ
@@ -185,40 +185,42 @@ FROM (
         )                                           AS hour_interval,
         merchant_id,
         -- Nine-way segmentation: card_type x recurrence x geography
+        -- NOTE: segment names below are illustrative (demo) — replace with
+        -- your actual payment method taxonomy in production.
         CASE
             WHEN method = 'card' AND lower(type) = 'debit'
                  AND recurring = 1 AND recurring_type IN ('initial', 'card_change')
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Debit Card - Recurring - Initial - International'
+                THEN 'Demo Payment Method 1'
             WHEN method = 'card' AND lower(type) = 'debit'
                  AND recurring = 1 AND recurring_type = 'auto'
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Debit Card - Recurring - Auto - International'
+                THEN 'Demo Payment Method 2'
             WHEN method = 'card' AND lower(type) = 'credit'
                  AND recurring = 1 AND recurring_type IN ('initial', 'card_change')
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Credit Card - Recurring - Initial - International'
+                THEN 'Demo Payment Method 3'
             WHEN method = 'card' AND lower(type) = 'credit'
                  AND recurring = 1 AND recurring_type = 'auto'
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Credit Card - Recurring - Auto - International'
+                THEN 'Demo Payment Method 4'
             WHEN method = 'card' AND lower(type) = 'prepaid'
                  AND recurring = 1 AND recurring_type IN ('initial', 'card_change')
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Prepaid Card - Recurring - Initial - International'
+                THEN 'Demo Payment Method 5'
             WHEN method = 'card' AND lower(type) = 'prepaid'
                  AND recurring = 1 AND recurring_type = 'auto'
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Prepaid Card - Recurring - Auto - International'
+                THEN 'Demo Payment Method 6'
             WHEN method = 'card' AND lower(type) = 'debit'
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Debit Card - International'
+                THEN 'Demo Payment Method 7'
             WHEN method = 'card' AND lower(type) = 'credit'
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Credit Card - International'
+                THEN 'Demo Payment Method 8'
             WHEN method = 'card' AND lower(type) = 'prepaid'
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Prepaid Card - International'
+                THEN 'Demo Payment Method 9'
             ELSE NULL
         END                                         AS payment_segment,
         count(id)                                   AS attempts,
@@ -257,36 +259,36 @@ FROM (
             WHEN method = 'card' AND lower(type) = 'debit'
                  AND recurring = 1 AND recurring_type IN ('initial', 'card_change')
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Debit Card - Recurring - Initial - International'
+                THEN 'Demo Payment Method 1'
             WHEN method = 'card' AND lower(type) = 'debit'
                  AND recurring = 1 AND recurring_type = 'auto'
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Debit Card - Recurring - Auto - International'
+                THEN 'Demo Payment Method 2'
             WHEN method = 'card' AND lower(type) = 'credit'
                  AND recurring = 1 AND recurring_type IN ('initial', 'card_change')
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Credit Card - Recurring - Initial - International'
+                THEN 'Demo Payment Method 3'
             WHEN method = 'card' AND lower(type) = 'credit'
                  AND recurring = 1 AND recurring_type = 'auto'
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Credit Card - Recurring - Auto - International'
+                THEN 'Demo Payment Method 4'
             WHEN method = 'card' AND lower(type) = 'prepaid'
                  AND recurring = 1 AND recurring_type IN ('initial', 'card_change')
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Prepaid Card - Recurring - Initial - International'
+                THEN 'Demo Payment Method 5'
             WHEN method = 'card' AND lower(type) = 'prepaid'
                  AND recurring = 1 AND recurring_type = 'auto'
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Prepaid Card - Recurring - Auto - International'
+                THEN 'Demo Payment Method 6'
             WHEN method = 'card' AND lower(type) = 'debit'
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Debit Card - International'
+                THEN 'Demo Payment Method 7'
             WHEN method = 'card' AND lower(type) = 'credit'
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Credit Card - International'
+                THEN 'Demo Payment Method 8'
             WHEN method = 'card' AND lower(type) = 'prepaid'
                  AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Prepaid Card - International'
+                THEN 'Demo Payment Method 9'
             ELSE NULL
         END                                                       AS payment_segment,
         internal_error_code                                       AS error_code,
@@ -498,7 +500,7 @@ default_args = {
 with DAG(
     dag_id=DAG_ID,
     default_args=default_args,
-    schedule="15 */2 * * *",            # every 2 hours at :15
+    schedule="15 * * * *",              # every hour at :15
     catchup=False,
     max_active_runs=1,
     dagrun_timeout=timedelta(hours=3),
