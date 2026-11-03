@@ -2,7 +2,7 @@
 Merchant Pulse — Airflow DAG (ClickHouse + Slack)
 ==================================================
 Monitors payment transaction success rates across a merchant portfolio and
-posts structured Slack digests every 2 hours, giving account teams real-time
+posts structured Slack digests every hour, giving account teams real-time
 visibility into payment health without needing direct data warehouse access.
 
 Architecture highlights
@@ -22,9 +22,9 @@ Architecture highlights
 
 Payment method segmentation
 ----------------------------
-Each transaction is bucketed into one of nine demo categories based on
-card attributes and transaction type. The SQL CASE block encodes this
-logic directly in ClickHouse to avoid post-fetch filtering in Python.
+Each transaction is bucketed into one of nine categories based on card
+attributes and transaction type. The segmentation CASE block is defined
+in the production query config (not included in this demo repo).
 
 Airflow v3 notes
 -----------------
@@ -167,143 +167,45 @@ def _merchant_ids_sql(merchant_ids: list[str]) -> str:
     return ", ".join(f"'{mid}'" for mid in escaped)
 
 
-# ---------------------------------------------------------------------------
-# Queries
-# ---------------------------------------------------------------------------
-# Both queries accept a single {merchant_ids_sql} placeholder so they execute
-# once for the full merchant cohort rather than once per merchant.
+def _load_sr_query() -> str:
+    """
+    Returns the ClickHouse SQL that computes per-merchant, per-segment
+    success rates over the last 3 completed hours (IST-explicit window).
 
-SUCCESS_RATE_QUERY = """
-SELECT *
-FROM (
-    SELECT
-        formatDateTime(
-            toStartOfHour(toTimeZone(fromUnixTimestamp(created_at), 'Asia/Kolkata')),
-            '%Y-%m-%d %H:00:00'
-        )                                           AS hour_interval,
-        merchant_id,
-        -- Nine-way segmentation: card_type x recurrence x geography
-        -- NOTE: segment names below are illustrative (demo) — replace with
-        -- your actual payment method taxonomy in production.
-        CASE
-            WHEN method = 'card' AND lower(type) = 'debit'
-                 AND recurring = 1 AND recurring_type IN ('initial', 'card_change')
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 1'
-            WHEN method = 'card' AND lower(type) = 'debit'
-                 AND recurring = 1 AND recurring_type = 'auto'
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 2'
-            WHEN method = 'card' AND lower(type) = 'credit'
-                 AND recurring = 1 AND recurring_type IN ('initial', 'card_change')
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 3'
-            WHEN method = 'card' AND lower(type) = 'credit'
-                 AND recurring = 1 AND recurring_type = 'auto'
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 4'
-            WHEN method = 'card' AND lower(type) = 'prepaid'
-                 AND recurring = 1 AND recurring_type IN ('initial', 'card_change')
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 5'
-            WHEN method = 'card' AND lower(type) = 'prepaid'
-                 AND recurring = 1 AND recurring_type = 'auto'
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 6'
-            WHEN method = 'card' AND lower(type) = 'debit'
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 7'
-            WHEN method = 'card' AND lower(type) = 'credit'
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 8'
-            WHEN method = 'card' AND lower(type) = 'prepaid'
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 9'
-            ELSE NULL
-        END                                         AS payment_segment,
-        count(id)                                   AS attempts,
-        round(countIf(authorized_at > 0) * 100.0 / count(id), 2) AS success_rate
-    FROM demo_db.transactions_view
-    WHERE merchant_id IN ({merchant_ids_sql})
-      -- Exclude known non-actionable error — not a real failure
-      AND (internal_error_code IS NULL
-           OR internal_error_code NOT IN ('DEMO_BLOCKED_ERROR_CODE'))
-      -- Rolling 3-hour window (IST-aware)
-      AND created_at >= toUnixTimestamp(toStartOfHour(toTimeZone(now(), 'Asia/Kolkata'))) - (3 * 3600)
-      AND created_at <  toUnixTimestamp(toStartOfHour(toTimeZone(now(), 'Asia/Kolkata')))
-    GROUP BY 1, 2, 3
-) AS t
-WHERE payment_segment IS NOT NULL AND payment_segment != ''
-ORDER BY merchant_id, hour_interval, attempts DESC
-"""
+    Query design:
+      - Runs once for all merchants combined (merchant_id IN (...))
+        to stay within the read-only user's hourly quota
+      - Maps transactions to one of nine payment segments using a
+        CASE block keyed on card type, recurrence, and geography
+      - Excludes a known non-actionable error code from the denominator
+      - Uses toTimeZone() explicitly so results are IST-independent of
+        the ClickHouse server's system timezone
 
-FAILURE_BREAKDOWN_QUERY = """
-SELECT
-    merchant_id,
-    hour_interval,
-    payment_segment,
-    error_code,
-    count(*)                                                      AS failure_count,
-    -- Grab up to 5 sample transaction IDs for quick investigation
-    arrayStringConcat(arraySlice(groupArray(id), 1, 5), ',')      AS sample_ids
-FROM (
-    SELECT
-        merchant_id,
-        formatDateTime(
-            toStartOfHour(toTimeZone(fromUnixTimestamp(created_at), 'Asia/Kolkata')),
-            '%Y-%m-%d %H:00:00'
-        )                                                         AS hour_interval,
-        CASE
-            WHEN method = 'card' AND lower(type) = 'debit'
-                 AND recurring = 1 AND recurring_type IN ('initial', 'card_change')
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 1'
-            WHEN method = 'card' AND lower(type) = 'debit'
-                 AND recurring = 1 AND recurring_type = 'auto'
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 2'
-            WHEN method = 'card' AND lower(type) = 'credit'
-                 AND recurring = 1 AND recurring_type IN ('initial', 'card_change')
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 3'
-            WHEN method = 'card' AND lower(type) = 'credit'
-                 AND recurring = 1 AND recurring_type = 'auto'
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 4'
-            WHEN method = 'card' AND lower(type) = 'prepaid'
-                 AND recurring = 1 AND recurring_type IN ('initial', 'card_change')
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 5'
-            WHEN method = 'card' AND lower(type) = 'prepaid'
-                 AND recurring = 1 AND recurring_type = 'auto'
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 6'
-            WHEN method = 'card' AND lower(type) = 'debit'
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 7'
-            WHEN method = 'card' AND lower(type) = 'credit'
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 8'
-            WHEN method = 'card' AND lower(type) = 'prepaid'
-                 AND (international = 1 OR (network = 'American Express' AND cards_country <> 'IN'))
-                THEN 'Demo Payment Method 9'
-            ELSE NULL
-        END                                                       AS payment_segment,
-        internal_error_code                                       AS error_code,
-        id
-    FROM demo_db.transactions_view
-    WHERE merchant_id IN ({merchant_ids_sql})
-      AND authorized_at = 0
-      AND internal_error_code IS NOT NULL
-      AND internal_error_code != ''
-      AND internal_error_code NOT IN ('DEMO_BLOCKED_ERROR_CODE')
-      AND created_at >= toUnixTimestamp(toStartOfHour(toTimeZone(now(), 'Asia/Kolkata'))) - (3 * 3600)
-      AND created_at <  toUnixTimestamp(toStartOfHour(toTimeZone(now(), 'Asia/Kolkata')))
-) AS base
-WHERE payment_segment IS NOT NULL AND payment_segment != ''
-GROUP BY 1, 2, 3, 4
-ORDER BY merchant_id, hour_interval, payment_segment, failure_count DESC
-"""
+    Implementation: proprietary — available on request.
+    """
+    raise NotImplementedError(
+        "Production SR query not included in demo repo. "
+        "Contact demo-owner@demo.com to discuss implementation."
+    )
+
+
+def _load_failure_breakdown_query() -> str:
+    """
+    Returns the ClickHouse SQL that fetches failure error codes and
+    sample transaction IDs for each (merchant, segment, hour) triple.
+
+    Query design:
+      - Runs once for all merchants (same IN (...) optimisation as SR query)
+      - Uses arraySlice(groupArray(id), 1, 5) to surface up to 5 sample
+        transaction IDs per error code for rapid investigation
+      - Shares the same 9-segment CASE block and IST window as the SR query
+
+    Implementation: proprietary — available on request.
+    """
+    raise NotImplementedError(
+        "Production failure breakdown query not included in demo repo. "
+        "Contact demo-owner@demo.com to discuss implementation."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -444,13 +346,13 @@ def run_merchant_pulse(**kwargs) -> None:
     try:
         logger.info("Step 1/2 — Fetching success-rate data for all merchants …")
         sr_rows = parse_sr_rows(
-            client.execute(SUCCESS_RATE_QUERY.format(merchant_ids_sql=ids_sql))
+            client.execute(_load_sr_query().format(merchant_ids_sql=ids_sql))
         )
         logger.info("  → %d rows fetched", len(sr_rows))
 
         logger.info("Step 2/2 — Fetching failure breakdown for all merchants …")
         failure_rows = parse_failure_rows(
-            client.execute(FAILURE_BREAKDOWN_QUERY.format(merchant_ids_sql=ids_sql))
+            client.execute(_load_failure_breakdown_query().format(merchant_ids_sql=ids_sql))
         )
         logger.info("  → %d rows fetched", len(failure_rows))
     finally:

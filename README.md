@@ -1,163 +1,128 @@
-# Merchant Pulse — Payment Health Monitor (Airflow + ClickHouse + Slack)
+# Merchant Pulse — Payment Health Digest
 
-> Automated payment observability agent that fetches transaction success-rate
-> data from ClickHouse and posts structured Slack digests every 2 hours —
-> giving account teams real-time merchant health visibility without needing
-> direct data warehouse access.
+An Airflow DAG that monitors payment transaction success rates across a merchant portfolio and posts structured Slack digests every hour, giving account teams real-time payment health visibility without needing direct data warehouse access.
 
----
-
-## What problem does this solve?
-
-Account managers at a payments company need to know — continuously — whether
-their merchants' international card payments are succeeding. Before this system,
-they either:
-
-- manually queried a data warehouse (slow, requires SQL knowledge), or  
-- waited for merchants to complain (too late).
-
-This DAG runs every 2 hours and posts a structured Slack digest per merchant,
-broken down by payment method, showing attempt volume, success rate, and the
-top failure error codes with sample payment IDs for instant investigation.
+> Built Aug 2024–Aug 2025 using the Anthropic SDK and Apache Airflow — before MCP, Claude Code, and modern agentic tooling existed in production-ready form. Raw API integration, no orchestration framework.
 
 ---
 
-## Sample Slack output
+## The Problem
+
+Merchant account teams needed to know when a merchant's payment success rates dropped — by payment type, by hour — without having to query ClickHouse themselves. Engineers couldn't give everyone DB access. Manual checks meant issues surfaced hours late. Account managers were reactive instead of proactive.
+
+---
+
+## What It Does
+
+An Airflow DAG runs every hour and posts a structured digest to each merchant's dedicated Slack channel:
 
 ```
-📊 *Merchant Alpha - Payment SR Update*
+📊 Merchant Alpha — Payment Health Digest
 Posted at: 2026-01-15 14:15:00 IST
 
 *12:00 - 13:00*
-  • Demo Payment Method 4: 340 attempts | 94.12% SR
-    ↳ GATEWAY_TIMEOUT (18 failures): pay_ABC1, pay_ABC2, pay_ABC3
-  • Demo Payment Method 7: 120 attempts | 97.50% SR
+  • Credit Card (Recurring - Initial): 340 attempts | 94.12% SR
+    ↳ GATEWAY_TIMEOUT (18 failures): txn_abc1, txn_abc2, txn_abc3
+  • Debit Card (Recurring - Auto): 120 attempts | 97.50% SR
+  • Prepaid (One-time): 88 attempts | 91.00% SR
+    ↳ ISSUER_DECLINE (7 failures): txn_xyz1
 
 *11:00 - 12:00*
-  • Demo Payment Method 8: 298 attempts | 96.98% SR
+  • Credit Card (Recurring - Initial): 302 attempts | 96.35% SR
+  ...
 ```
+
+Account teams see: volume, success rate, top error codes, and sample transaction IDs — all per payment segment per hour. No SQL, no dashboards, no waiting.
 
 ---
 
 ## Architecture
 
 ```
-ClickHouse (columnar DB)
-        │
-        │  2 queries per run (see optimisation below)
-        ▼
-  Airflow PythonOperator  (Airflow v3, worker-side)
-        │
-        │  group by merchant_id in Python
-        ▼
-  Slack Webhook  ──►  per-merchant channel
+Airflow Scheduler (cron: 15 * * * *)
+    └── PythonOperator: run_merchant_pulse()
+            │
+            ├── ClickHouse (read-only connection)
+            │     ├── Query 1: success rates  ─┐
+            │     └── Query 2: failure codes  ─┘ (both run ONCE for all merchants)
+            │
+            ├── Python grouping
+            │     └── group_by_merchant() → per-merchant data slices
+            │
+            └── Slack (per merchant)
+                  └── format_digest_message() → post to channel
 ```
 
-### Key design decisions
+---
 
-| Decision | Rationale |
-|---|---|
-| **2 queries total** instead of `2 × N_merchants` | ClickHouse read-only user has an hourly query quota. With many merchants the naïve approach hits `2×N queries/run`; this approach uses `2`. |
-| **`retries=0`** | A retry after quota exhaustion makes things worse, not better. Fail fast; let on-call investigate. |
-| **1-hour overlap buffer** | Window covers the last 3 completed hours. If one run fails, the next run's window still covers the missed hour. |
-| **Explicit `toTimeZone(..., 'Asia/Kolkata')`** | ClickHouse server timezone is unreliable in cloud deployments. IST is baked into every timestamp operation. |
-| **SQL CASE segmentation** | Nine-way card-type × recurrence × geography segmentation happens in ClickHouse (not Python), keeping the data transfer minimal. |
-| **Worker-side execution** | `lib.slack.notify` builds a `SlackWebhookOperator` and calls `.execute()` with a live task context; `BaseHook.get_connection` needs the Airflow metadata DB. Both require the worker, not a Kubernetes pod. |
+## Key Design Decisions
+
+**1. 2 queries for N merchants, not 2N**
+
+The naive approach runs two ClickHouse queries per merchant: one for success rates, one for failure breakdown. With 26 merchants, that's 52 queries per hour — exceeding the read-only user's hourly quota.
+
+The optimised approach runs both queries once with `merchant_id IN (...)`, then groups results in Python. 52 → 2 queries per run. A 26x reduction.
+
+```python
+ids_sql = _merchant_ids_sql(MERCHANT_IDS)
+sr_rows      = client.execute(SR_QUERY.format(merchant_ids_sql=ids_sql))
+failure_rows = client.execute(FAILURE_QUERY.format(merchant_ids_sql=ids_sql))
+# Group in Python — O(N) dict partition, not N round trips
+sr_by_mid = group_by_merchant(sr_rows)
+```
+
+**2. 3-hour rolling window with 1-hour overlap**
+
+Each run covers the last 3 completed hours, not just the last 1. If a single run fails (ClickHouse lag, Airflow worker restart), the next run's window recovers the missed hour. No data gaps without manual re-runs.
+
+**3. retries=0 — intentional**
+
+Auto-retry on failure would consume additional ClickHouse quota for what is likely a transient infra issue, not a data issue. Failures surface in Slack via `on_failure_callback` instead.
+
+**4. Nine-way payment segmentation in SQL, not Python**
+
+Segmenting by card type × recurrence × geography in the CASE block pushes filtering to ClickHouse (columnar, fast) rather than Python. Keeps result set small before it crosses the wire.
+
+**5. IST timezone explicit in SQL**
+
+`toTimeZone(fromUnixTimestamp(created_at), 'Asia/Kolkata')` in every timestamp expression makes results independent of the ClickHouse server's system timezone. Avoids hour-boundary bugs when the server is on UTC.
 
 ---
 
-## Payment method segmentation
+## Files
 
-Each transaction is classified into one of 9 demo buckets based on card
-attributes and transaction type (names are illustrative — replace with
-your own taxonomy):
-
-| Bucket | Label |
+| File | Description |
 |---|---|
-| Demo Payment Method 1 | Card type A — Recurring (initial/change) |
-| Demo Payment Method 2 | Card type A — Recurring (auto) |
-| Demo Payment Method 3 | Card type B — Recurring (initial/change) |
-| Demo Payment Method 4 | Card type B — Recurring (auto) |
-| Demo Payment Method 5 | Card type C — Recurring (initial/change) |
-| Demo Payment Method 6 | Card type C — Recurring (auto) |
-| Demo Payment Method 7 | Card type A — One-time |
-| Demo Payment Method 8 | Card type B — One-time |
-| Demo Payment Method 9 | Card type C — One-time |
+| `merchant_pulse_dag.py` | Full DAG: ClickHouse client, data parsing, message formatting, Slack posting |
+| `requirements.txt` | Dependencies |
 
----
-
-## Stack
-
-| Component | Technology |
-|---|---|
-| Orchestration | Apache Airflow v3 |
-| Data warehouse | ClickHouse |
-| ClickHouse driver | `clickhouse-driver` |
-| Alerting | Slack Webhooks (via Airflow `SlackWebhookOperator`) |
-| Timezone handling | `pytz` |
-| Language | Python 3.11+ |
+**Note on SQL:** The payment method segmentation query and failure breakdown query contain proprietary business logic (segment taxonomy, error code exclusions). They are not included in this demo repo. The query interfaces (`_load_sr_query()`, `_load_failure_breakdown_query()`) are stubbed with descriptive docstrings — available on request.
 
 ---
 
 ## Configuration
 
-All credentials live in the Airflow connection store — no secrets in DAG code.
+**Airflow connections required:**
+- `clickhouse_readonly_default` — ClickHouse host, port, user, password, schema
+- `slack_default` — Slack webhook token
 
-| Airflow Connection ID | What it holds |
-|---|---|
-| `clickhouse_readonly_default` | ClickHouse host, port, read-only user credentials, database |
-
-Slack webhook URLs are stored as Airflow connections and resolved by
-`lib.slack.notify` at runtime.
+**Merchant roster:**
+Edit the `MERCHANTS` list in `merchant_pulse_dag.py`. Each entry needs a `merchant_id`, display `name`, and `channel_id`.
 
 ---
 
-## Running locally (development)
+## Stack
 
-```bash
-# 1. Install dependencies
-pip install -r requirements.txt
-
-# 2. Set up a local Airflow environment
-export AIRFLOW_HOME=~/airflow
-airflow db migrate
-airflow connections add clickhouse_readonly_default \
-    --conn-type generic \
-    --conn-host localhost \
-    --conn-port 9000 \
-    --conn-login readonly_user \
-    --conn-password your_password \
-    --conn-schema default
-
-# 3. Run the DAG task directly (dry-run)
-airflow tasks test sr_poster_clickhouse post_sr_updates 2026-01-15
-```
+- Apache Airflow 2.9+ (Airflow v3 compatible)
+- ClickHouse (`clickhouse-driver`)
+- Slack SDK (`slack_sdk`)
+- Python 3.11+
+- pytz (explicit IST handling)
 
 ---
 
-## File structure
+## What I'd Change Today
 
-```
-sr-alert-bot/
-├── sr_poster_dag.py      # Main Airflow DAG
-├── requirements.txt      # Python dependencies
-└── README.md             # This file
-```
-
-> **Note:** `lib/slack.py` and `lib/email.py` are internal helpers that wrap
-> `SlackWebhookOperator` and Airflow email utilities. They are not included here
-> as they contain organisation-specific routing logic.
-
----
-
-## What I'd add next
-
-- [ ] Prometheus metrics export (attempt volume + SR per method as gauges)
-- [ ] Configurable SR threshold alerts (e.g. page on-call if SR drops below 90%)
-- [ ] BigQuery sink for long-term trend analysis
-- [ ] Unit tests for `build_error_map` and `format_sr_message`
-
----
-
-*Built as part of a payments observability platform. Merchant IDs, channel IDs,
-and internal table names have been anonymised.*
+- Move to a vector DB for semantic error code grouping (similar errors cluster better than exact-match)
+- Add a threshold-based alert layer: if SR drops >X% vs prior hour, skip the digest and fire a P1 alert immediately
+- Parameterise the merchant roster in Airflow Variables instead of hardcoding — easier to add/remove merchants without a DAG redeploy
